@@ -60,16 +60,25 @@ class SimpleSignal<T> {
 protocol RefresherViewAdatpterProtocol {
     // in
     var pullingPercentage: SimpleSignal<Double> { get }
+    var isDragging: Bool { get }
     // out
     func setScrollViewToPullingPercentage(_ percentage: Double)
     func setScrollViewToLoadingState(_ loading: Bool)
-    func animateBackToNormal()
 }
+
+
+protocol RefresherCoreProtocol {
+    func scrollViewDidChangePullingPercentage(_ percentage: Double)
+    func stateWillChange(from: Refresher.State, to: Refresher.State)
+    func stateDidChange(to: Refresher.State, from: Refresher.State)
+}
+
+class struct
 
 
 struct Refresher {
 
-    enum State: Int {
+    enum State {
         case normal, pulling, loading, shrinking
     }
 
@@ -95,10 +104,12 @@ struct Refresher {
             }
         }
 
-        let viewAdapter: RefresherViewAdatpterProtocol
+        let viewAdapter: ViewAdapter
+        let core: RefresherCoreProtocol
 
-        init(scrollView: UIScrollView) {
-            viewAdapter = ViewAdapter(scrollView: scrollView, triggerDistance: 60)
+        init(scrollView: UIScrollView, core: RefresherCoreProtocol) {
+            viewAdapter = ViewAdapter(scrollView: scrollView, triggerDistance: 50)
+            core =
             state.willLeaveStateAction = { [weak self] in self?.stateWillChange(from: $1, to: $2) }
             state.didEnterStateAction = { [weak self] in self?.stateDidChange(to: $2, from: $1) }
             viewAdapter.pullingPercentage.subscribe { [weak self] in self?.scrollViewDidChangePullingPercentage($0) }
@@ -115,7 +126,7 @@ struct Refresher {
                     try! state.transitState(by: .toPulling)
                 }
             case .pulling:
-                if percentage > 1 {
+                if viewAdapter.isDragging == false, percentage > 1 {
                     try! state.transitState(by: .toLoading)
                 } else if percentage <= 0 {
                     try! state.transitState(by: .backToNormal)
@@ -131,23 +142,27 @@ struct Refresher {
 
         func stateWillChange(from: State, to: State) {
             print("\(from) -> \(to)")
-
-            switch (from, to) {
-            case (.loading, .shrinking):
-                viewAdapter.setScrollViewToLoadingState(false)
-                viewAdapter.animateBackToNormal()
-            default:
-                ()
-            }
         }
+
         func stateDidChange(to: State, from: State) {
             switch (from, to) {
             case (.pulling, .loading):
-                viewAdapter.setScrollViewToLoadingState(true)
+                UIView.animate(withDuration: 0.25, animations: {
+                    UIView.setAnimationBeginsFromCurrentState(true)
+//                    UIView.setAnimationCurve(UIViewAnimationCurve(rawValue: 7)!)
+                    self.viewAdapter.setScrollViewToLoadingState(true)
+                    self.viewAdapter.setScrollViewToPullingPercentage(1)
+                })
                 // hack
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: {
                     try! self.state.transitState(by: .toShrinking)
                 })
+            case (.loading, .shrinking):
+                UIView.animate(withDuration: 0.25, animations: {
+                    self.viewAdapter.setScrollViewToLoadingState(false)
+                    self.viewAdapter.setScrollViewToPullingPercentage(0)
+                })
+            //                viewAdapter.animateBackToNormal()
             default:
                 ()
             }
@@ -160,18 +175,22 @@ struct Refresher {
 
         var pullingPercentage = SimpleSignal<Double>(0)
         let triggerDistance: CGFloat
+        var isDragging: Bool {
+            return view?.isDragging ?? false
+        }
 
-        private weak var view: UIScrollView?
+         weak var view: UIScrollView?
         private var insetsAlreadyAdded = false
         private var dispose: NSKeyValueObservation?
 
         init(scrollView:UIScrollView, triggerDistance: CGFloat) {
             view = scrollView
             self.triggerDistance = triggerDistance
-            dispose = scrollView.observe(\UIScrollView.contentOffset, options: .new) {
+            dispose = scrollView.observe(\UIScrollView.contentOffset, options: [ .new]) {
                 [weak self] (scrollView, offset) in
                 guard let sself = self, let offsetY = offset.newValue?.y else { return }
                 sself.pullingPercentage.value = sself.percentage(from: offsetY)
+//                print("\(offsetY)")
             }
         }
 
@@ -187,26 +206,17 @@ struct Refresher {
             insetsAlreadyAdded = loading
             let delta = triggerDistance * (loading ? 1 : -1)
 
+
             var insets = view.contentInset
             insets.top += delta
             view.contentInset = insets
 
-            // make up the offset
-            var offset = view.contentOffset
-            offset.y += delta
-            view.contentOffset = offset
-
+//            // make up the offset
+//            var offset = view.contentOffset
+//            offset.y += delta
+//            view.contentOffset = offset
         }
 
-        func animateBackToNormal() {
-            guard let view = view else { return }
-
-            UIView.animate(withDuration: 0.2) {
-                var offset = view.contentOffset
-                offset.y += self.triggerDistance
-                view.contentOffset = offset
-            }
-        }
 
         private func percentage(from offset:CGFloat) -> Double {
             guard offset < 0 else { return 0 }
@@ -237,7 +247,7 @@ class ViewController: UIViewController, UIScrollViewDelegate {
         scrollView.contentSize = CGSize(width: 100, height: 100000)
         scrollView.contentInset = .zero
 
-        let v = UIView(frame: CGRect(x: 20, y: 0, width: 200, height: 30))
+        let v = UIView(frame: CGRect(x: 20, y: 0, width: 200, height: 80))
         v.backgroundColor = UIColor.orange
         scrollView.addSubview(v)
 
